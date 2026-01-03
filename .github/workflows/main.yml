@@ -1,0 +1,62 @@
+name: Linux_GUI_RDP
+
+on:
+  workflow_dispatch:
+
+jobs:
+  linux-gui:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Update and Install Desktop Environment
+        run: |
+          sudo apt-get update
+          # Install XFCE, XRDP, and DBus utilities
+          sudo apt-get install -y xfce4 xfce4-goodies xrdp xorg dbus-x11 x11-xserver-utils
+          sudo systemctl enable xrdp
+          sudo systemctl start xrdp
+
+      - name: Create User and Configure Session (The Fix)
+        run: |
+          # Create user with password
+          sudo useradd -m -s /bin/bash runneradmin
+          echo "runneradmin:password123" | sudo chpasswd
+          # Add user to ssl-cert group to access certificates
+          sudo usermod -aG sudo,ssl-cert runneradmin
+          
+          # Force DBus Launch for XFCE Session
+          # This line unsets conflicting variables and launches a fresh dbus session
+          sudo -u runneradmin bash -c 'echo "unset DBUS_SESSION_BUS_ADDRESS" > /home/runneradmin/.xsession'
+          sudo -u runneradmin bash -c 'echo "exec dbus-launch --exit-with-session xfce4-session" >> /home/runneradmin/.xsession'
+          
+          # Give permissions
+          sudo chmod 755 /home/runneradmin/.xsession
+          
+          echo "=========================================="
+          echo "Username: runneradmin"
+          echo "Password: password123"
+          echo "=========================================="
+
+      - name: Install Tailscale
+        run: |
+          curl -fsSL https://tailscale.com/install.sh | sh
+
+      - name: Start Tailscale
+        env:
+          TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+        run: |
+          sudo tailscale up --authkey=$TAILSCALE_AUTH_KEY --hostname=linux-dbus-fixed
+          
+      - name: Display IP Address
+        run: |
+          echo "=========================================="
+          echo "Tailscale IP:"
+          tailscale ip -4
+          echo "=========================================="
+
+      - name: Keep Alive Loop
+        run: |
+          while true; do
+            sleep 300
+          done

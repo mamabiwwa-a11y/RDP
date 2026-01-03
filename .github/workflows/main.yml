@@ -1,91 +1,140 @@
-name: Linux_GUI_RDP_V6
-
+name: Linux_GUI_RDP_V6_Improved
 on:
   workflow_dispatch:
-
 jobs:
   linux-gui:
-    # තාමත් අපි පරණ Ubuntu 22.04 එකේ ඉමු, ඒක ආරක්ෂිතයි.
     runs-on: ubuntu-22.04
     timeout-minutes: 360
-
     steps:
       - name: Update and Install Desktop Environment
         run: |
           sudo apt-get update
-          # Install basic tools + XFCE + XRDP + DBus
           sudo apt-get install -y xfce4 xfce4-goodies xrdp xorg dbus-x11 x11-xserver-utils
           sudo systemctl enable xrdp
           sudo service xrdp start
-
-      - name: Create User and Inject Manual Startup Script
+      
+      - name: Create User and Configure GUI Session
         run: |
           # 1. Create User
           sudo useradd -m -s /bin/bash runneradmin
           echo "runneradmin:password123" | sudo chpasswd
           sudo usermod -aG sudo,ssl-cert runneradmin
           
-          # 2. Create the Manual Launch Script (Based on your research)
-          # We write this into a dedicated script file
-          sudo bash -c "cat > /home/runneradmin/start_gui.sh <<EOF
-          #!/bin/bash
-          
-          # Manually create Runtime Directory if missing
-          export XDG_RUNTIME_DIR=/run/user/\$(id -u)
-          if [ ! -d \"\$XDG_RUNTIME_DIR\" ]; then
-            mkdir -p \"\$XDG_RUNTIME_DIR\"
-            chmod 700 \"\$XDG_RUNTIME_DIR\"
-          fi
-          
-          # Spawn D-Bus Session manually
-          if [ -z \"\$DBUS_SESSION_BUS_ADDRESS\" ]; then
-             eval \$(dbus-launch --sh-syntax --exit-with-session)
-          fi
-          
-          # Export Environment Variables
-          export XDG_SESSION_TYPE=x11
-          export XDG_CURRENT_DESKTOP=XFCE
-          # We don't hardcode DISPLAY here, XRDP sets it automatically
-          
-          # Start XFCE inside a DBus session wrapper
-          exec dbus-run-session -- xfce4-session
-          EOF"
+          # 2. Create Manual GUI Launch Script
+          sudo bash -c "cat > /home/runneradmin/start_gui.sh <<'EOF'
+#!/bin/bash
 
-          # 3. Set Permissions and Link to .xsession
+# Manually create Runtime Directory (GitHub Actions workaround)
+export XDG_RUNTIME_DIR=/tmp/runtime-\$(id -u)
+
+# Security: Ensure we own the directory
+if [ ! -d \"\$XDG_RUNTIME_DIR\" ] || [ ! -O \"\$XDG_RUNTIME_DIR\" ]; then
+  rm -rf \"\$XDG_RUNTIME_DIR\" 2>/dev/null
+  mkdir -p \"\$XDG_RUNTIME_DIR\"
+  chmod 700 \"\$XDG_RUNTIME_DIR\"
+fi
+
+# Spawn D-Bus Session if not already running
+if [ -z \"\$DBUS_SESSION_BUS_ADDRESS\" ]; then
+   eval \\\$(dbus-launch --sh-syntax --exit-with-session)
+fi
+
+# Export XDG Environment Variables for XFCE
+export XDG_SESSION_TYPE=x11
+export XDG_CURRENT_DESKTOP=XFCE
+export XDG_CONFIG_DIRS=/etc/xdg
+export XDG_DATA_DIRS=/usr/local/share:/usr/share
+export XDG_CONFIG_HOME=\"\$HOME/.config\"
+export XDG_CACHE_HOME=\"\$HOME/.cache\"
+export XDG_DATA_HOME=\"\$HOME/.local/share\"
+
+# Create config directories if missing
+mkdir -p \"\$XDG_CONFIG_HOME\" \"\$XDG_CACHE_HOME\" \"\$XDG_DATA_HOME\"
+
+# Start XFCE with proper D-Bus session management
+exec dbus-run-session -- xfce4-session
+EOF"
+          
+          # 3. Set Permissions
           sudo chmod +x /home/runneradmin/start_gui.sh
           sudo chown runneradmin:runneradmin /home/runneradmin/start_gui.sh
           
-          # Point .xsession to execute our manual script
-          sudo -u runneradmin bash -c 'echo "./start_gui.sh" > /home/runneradmin/.xsession'
-          sudo chmod 755 /home/runneradmin/.xsession
+          # 4. Create .xsession with ABSOLUTE path
+          sudo -u runneradmin bash -c 'echo "exec /home/runneradmin/start_gui.sh" > /home/runneradmin/.xsession'
+          sudo chmod +x /home/runneradmin/.xsession
+          
+          # 5. Update XRDP startwm.sh to use custom session
+          sudo bash -c "cat > /etc/xrdp/startwm.sh <<'STARTWM'
+#!/bin/sh
 
-          # Restart XRDP Service
+if [ -r /etc/profile ]; then
+    . /etc/profile
+fi
+
+if [ -r \\\$HOME/.profile ]; then
+    . \\\$HOME/.profile
+fi
+
+# Execute user's custom session
+if [ -x \\\$HOME/.xsession ]; then
+    exec \\\$HOME/.xsession
+else
+    # Fallback to manual script
+    exec /home/runneradmin/start_gui.sh
+fi
+STARTWM"
+          sudo chmod +x /etc/xrdp/startwm.sh
+          
+          # 6. Restart XRDP to apply changes
           sudo service xrdp restart
           
           echo "=========================================="
           echo "Username: runneradmin"
           echo "Password: password123"
           echo "=========================================="
-
+      
+      - name: Test D-Bus Session (Optional Debug)
+        run: |
+          echo "Testing D-Bus availability..."
+          sudo -u runneradmin bash -c '
+            export XDG_RUNTIME_DIR=/tmp/runtime-$(id -u)
+            mkdir -p "$XDG_RUNTIME_DIR"
+            chmod 700 "$XDG_RUNTIME_DIR"
+            dbus-run-session -- bash -c "
+              echo \"D-Bus Address: \$DBUS_SESSION_BUS_ADDRESS\"
+              dbus-send --session --print-reply --dest=org.freedesktop.DBus / org.freedesktop.DBus.GetId
+            "
+          ' || echo "D-Bus test failed (expected on first run)"
+      
       - name: Install Tailscale
         run: |
           curl -fsSL https://tailscale.com/install.sh | sh
-
+      
       - name: Start Tailscale
         env:
           TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
-          sudo tailscale up --authkey=$TAILSCALE_AUTH_KEY --hostname=linux-manual-fix
+          sudo tailscale up --authkey=$TAILSCALE_AUTH_KEY --hostname=linux-manual-fix --ssh
           
-      - name: Display IP Address
+      - name: Display Connection Info
         run: |
           echo "=========================================="
           echo "Tailscale IP:"
           tailscale ip -4
+          echo ""
+          echo "Connect with RDP client:"
+          echo "  Address: $(tailscale ip -4):3389"
+          echo "  Username: runneradmin"
+          echo "  Password: password123"
           echo "=========================================="
-
+          echo ""
+          echo "XRDP Status:"
+          sudo systemctl status xrdp --no-pager
+      
       - name: Keep Alive Loop
         run: |
+          echo "Desktop environment is running..."
+          echo "Press 'Cancel workflow' button to stop."
           while true; do
             sleep 300
           done

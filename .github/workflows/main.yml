@@ -1,11 +1,11 @@
-name: Linux_GUI_RDP_V5
+name: Linux_GUI_RDP_V6
 
 on:
   workflow_dispatch:
 
 jobs:
   linux-gui:
-    # අපි පරණ, ස්ටේබල් වර්ෂන් එකක් ගන්නවා
+    # තාමත් අපි පරණ Ubuntu 22.04 එකේ ඉමු, ඒක ආරක්ෂිතයි.
     runs-on: ubuntu-22.04
     timeout-minutes: 360
 
@@ -13,33 +13,53 @@ jobs:
       - name: Update and Install Desktop Environment
         run: |
           sudo apt-get update
-          # Install XFCE and XRDP (Standard packages)
-          sudo apt-get install -y xfce4 xfce4-goodies xrdp
+          # Install basic tools + XFCE + XRDP + DBus
+          sudo apt-get install -y xfce4 xfce4-goodies xrdp xorg dbus-x11 x11-xserver-utils
           sudo systemctl enable xrdp
           sudo service xrdp start
 
-      - name: Configure User and Session (Simple & Stable)
+      - name: Create User and Inject Manual Startup Script
         run: |
-          # Create user
+          # 1. Create User
           sudo useradd -m -s /bin/bash runneradmin
           echo "runneradmin:password123" | sudo chpasswd
           sudo usermod -aG sudo,ssl-cert runneradmin
           
-          # Simple session config for Ubuntu 22.04
-          sudo -u runneradmin bash -c 'echo "xfce4-session" > /home/runneradmin/.xsession'
-          sudo chmod 755 /home/runneradmin/.xsession
+          # 2. Create the Manual Launch Script (Based on your research)
+          # We write this into a dedicated script file
+          sudo bash -c "cat > /home/runneradmin/start_gui.sh <<EOF
+          #!/bin/bash
           
-          # Fix Polkit issues (Optional but good for stability)
-          sudo bash -c 'cat > /etc/polkit-1/localauthority/50-local.d/45-allow-colord.pkla <<EOF
-          [Allow Colord all Users]
-          Identity=unix-user:*
-          Action=org.freedesktop.color-manager.create-device;org.freedesktop.color-manager.create-profile;org.freedesktop.color-manager.delete-device;org.freedesktop.color-manager.delete-profile;org.freedesktop.color-manager.modify-device;org.freedesktop.color-manager.modify-profile
-          ResultAny=no
-          ResultInactive=no
-          ResultActive=yes
-          EOF'
+          # Manually create Runtime Directory if missing
+          export XDG_RUNTIME_DIR=/run/user/\$(id -u)
+          if [ ! -d \"\$XDG_RUNTIME_DIR\" ]; then
+            mkdir -p \"\$XDG_RUNTIME_DIR\"
+            chmod 700 \"\$XDG_RUNTIME_DIR\"
+          fi
+          
+          # Spawn D-Bus Session manually
+          if [ -z \"\$DBUS_SESSION_BUS_ADDRESS\" ]; then
+             eval \$(dbus-launch --sh-syntax --exit-with-session)
+          fi
+          
+          # Export Environment Variables
+          export XDG_SESSION_TYPE=x11
+          export XDG_CURRENT_DESKTOP=XFCE
+          # We don't hardcode DISPLAY here, XRDP sets it automatically
+          
+          # Start XFCE inside a DBus session wrapper
+          exec dbus-run-session -- xfce4-session
+          EOF"
 
-          # Restart XRDP
+          # 3. Set Permissions and Link to .xsession
+          sudo chmod +x /home/runneradmin/start_gui.sh
+          sudo chown runneradmin:runneradmin /home/runneradmin/start_gui.sh
+          
+          # Point .xsession to execute our manual script
+          sudo -u runneradmin bash -c 'echo "./start_gui.sh" > /home/runneradmin/.xsession'
+          sudo chmod 755 /home/runneradmin/.xsession
+
+          # Restart XRDP Service
           sudo service xrdp restart
           
           echo "=========================================="
@@ -55,7 +75,7 @@ jobs:
         env:
           TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
-          sudo tailscale up --authkey=$TAILSCALE_AUTH_KEY --hostname=linux-stable-box
+          sudo tailscale up --authkey=$TAILSCALE_AUTH_KEY --hostname=linux-manual-fix
           
       - name: Display IP Address
         run: |

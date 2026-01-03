@@ -1,37 +1,46 @@
-name: Linux_GUI_RDP
+name: Linux_GUI_RDP_V5
 
 on:
   workflow_dispatch:
 
 jobs:
   linux-gui:
-    runs-on: ubuntu-latest
+    # අපි පරණ, ස්ටේබල් වර්ෂන් එකක් ගන්නවා
+    runs-on: ubuntu-22.04
     timeout-minutes: 360
 
     steps:
       - name: Update and Install Desktop Environment
         run: |
           sudo apt-get update
-          # Install XFCE, XRDP, and DBus utilities
-          sudo apt-get install -y xfce4 xfce4-goodies xrdp xorg dbus-x11 x11-xserver-utils
+          # Install XFCE and XRDP (Standard packages)
+          sudo apt-get install -y xfce4 xfce4-goodies xrdp
           sudo systemctl enable xrdp
-          sudo systemctl start xrdp
+          sudo service xrdp start
 
-      - name: Create User and Configure Session (The Fix)
+      - name: Configure User and Session (Simple & Stable)
         run: |
-          # Create user with password
+          # Create user
           sudo useradd -m -s /bin/bash runneradmin
           echo "runneradmin:password123" | sudo chpasswd
-          # Add user to ssl-cert group to access certificates
           sudo usermod -aG sudo,ssl-cert runneradmin
           
-          # Force DBus Launch for XFCE Session
-          # This line unsets conflicting variables and launches a fresh dbus session
-          sudo -u runneradmin bash -c 'echo "unset DBUS_SESSION_BUS_ADDRESS" > /home/runneradmin/.xsession'
-          sudo -u runneradmin bash -c 'echo "exec dbus-launch --exit-with-session xfce4-session" >> /home/runneradmin/.xsession'
-          
-          # Give permissions
+          # Simple session config for Ubuntu 22.04
+          sudo -u runneradmin bash -c 'echo "xfce4-session" > /home/runneradmin/.xsession'
           sudo chmod 755 /home/runneradmin/.xsession
+          
+          # Fix Polkit issues (Optional but good for stability)
+          sudo bash -c 'cat > /etc/polkit-1/localauthority/50-local.d/45-allow-colord.pkla <<EOF
+          [Allow Colord all Users]
+          Identity=unix-user:*
+          Action=org.freedesktop.color-manager.create-device;org.freedesktop.color-manager.create-profile;org.freedesktop.color-manager.delete-device;org.freedesktop.color-manager.delete-profile;org.freedesktop.color-manager.modify-device;org.freedesktop.color-manager.modify-profile
+          ResultAny=no
+          ResultInactive=no
+          ResultActive=yes
+          EOF'
+
+          # Restart XRDP
+          sudo service xrdp restart
           
           echo "=========================================="
           echo "Username: runneradmin"
@@ -46,7 +55,7 @@ jobs:
         env:
           TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
-          sudo tailscale up --authkey=$TAILSCALE_AUTH_KEY --hostname=linux-dbus-fixed
+          sudo tailscale up --authkey=$TAILSCALE_AUTH_KEY --hostname=linux-stable-box
           
       - name: Display IP Address
         run: |
